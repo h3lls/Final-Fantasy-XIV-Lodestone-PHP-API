@@ -68,19 +68,68 @@ class ffxivLodestoneAPI {
     return self::$instance;
   }
   
-  public function GetHTMLObject ( $url ) {
+    public function GetHTMLObject ( $url ) {
+        $dom = new simple_html_dom;
+        $proxyfile = '/var/www/lodestone/proxylist.txt';
+        $proxylist = file($proxyfile);
 
-    $context = array(
-      'http' => array (
-        'header' => 'Accept-Language: en-us,en;q=0.5\r\nAccept-Charset: utf-8;q=0.5\r\n',
-        'user_agent' => 'Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US; rv:1.9.2.08) Gecko/20100914 Firefox/3.6.10'
-      )
-    );
-    
-    $context = stream_context_create ( $context );
-    
-    return file_get_html( $this->LodestoneURL . $url, false, $context );
-  }
+        if ($proxylist == false) die("file load failed.");
+        $result = "";
+        $count = 0;
+        while ($count < 20) {
+            $count++;
+            $idx = array_rand($proxylist);
+            $randomproxy = $proxylist[$idx];
+            if (trim($randomproxy) == "") continue;
+            try {
+                $result = $this->GetHTMLObjectProxy($url, $randomproxy);
+                if ($result == false) {
+                    unset($proxylist[$idx]);
+                    $proxylist = array_values($proxylist);
+                } else {
+                    $dom->load($result, true);
+                    $title = $dom->find('title');
+                    if ($title[0]->plaintext != 'FINAL FANTASY XIV, The Lodestone') {
+                        unset($proxylist[$idx]);
+                        $proxylist = array_values($proxylist);
+                    } else {
+                        // Good proxy found, exit loop and handle results.
+                        break;
+                    }
+                }
+            } catch(Exception $e) {
+                //print "<br>" . $e . " Removing proxy: " . $proxylist[$idx];
+                unset($proxylist[$idx]);
+                $proxylist = array_values($proxylist);
+            }
+            if (count($proxylist) < 1) {
+                break;
+            }
+        }
+        $fh = fopen($proxyfile, 'w') or die("can't open file");
+        foreach ($proxylist as $proxy) {
+            fwrite($fh, $proxy);
+        }
+        fclose($fh);
+        return $dom;        
+    }
+    public function GetHTMLObjectProxy ( $url, $proxy ) {
+        $context = array(
+          'http' => array (
+            'proxy' => 'tcp://' . $proxy, // This needs to be the server and the port of the NTLM Authentication Proxy Server.
+            'request_fulluri' => True, 
+            'timeout' => 5,
+            'header' => 'Accept-Language: en-us,en;q=0.5\r\nAccept-Charset: utf-8;q=0.5\r\n',
+            'user_agent' => 'Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US; rv:1.9.2.08) Gecko/20100914 Firefox/3.6.10'
+          )
+        );
+        $context = stream_context_create ( $context );
+        //return file_get_contents("http://www.ffxivbattle.com/lodestone/testfile2.htm", false, $context );
+        return file_get_contents($this->LodestoneURL . $url, false, $context );
+
+        //return file_get_html( );
+    }
+  
 
   // Search 
   public function SearchCharacterList ( $CharacterName, $Server = false, $Class = false ) {
@@ -90,25 +139,27 @@ class ffxivLodestoneAPI {
     $html = $this->GetHTMLObject ( '/rc/search/search?tgt=77&q=' . urlencode($CharacterName) . (($Class)?'&cms='.$Class:false) . (($Server)?'&cw='.$Server:false)  );
     
     // Find the character list... kind of blah but the DOM Library has limitations, so work around them!  
-    $CharListObj = $html->find ('div.contents-frame table.contents-table1 tr td img.character-icon', 0)->parent()->parent()->parent()->parent()->parent()->parent()->removeNodes('tr',1);
+    $tmpres = $html->find(".contents-table1TD1");
+    foreach ($tmpres as $Char) {
+        //$str = $tmpres[3];
+        $charid = $Char->find ('a[href^=/rc/character/top]', 0);
+        if ($charid != null) {
+          $Result = new SimpleXMLElement("<Character></Character>");
+          
+          // Get Character ID and setup Results array.
+          $CharID = $Char->find ('a[href^=/rc/character/top]', 0);
+          $Result->CharName = trim($Char->plaintext);
+          $Result->CharacterID = substr ( $CharID->href, 25, strlen ($CharID->href) );
+          
+          // Start getting other data.
+          $Result->CharacterImage = $Char->find ('img.character-icon', 0)->src;
+          
+          $Result->CharacterMainSkill = $Char->parent()->children(1)->plaintext;
+          $Result->CharacterWorld = $Char->parent()->children(2)->plaintext;
 
-    // Loop through each character in list
-    foreach ( $CharListObj->find('table tr') as $Char ) {
-      
-      $Result = new SimpleXMLElement("<Character></Character>");
-      
-      // Get Character ID and setup Results array.
-      $CharID = $Char->find ('a[href^=/rc/character/top]', 0);
-      $Result->CharName = $CharID->plaintext;
-      $Result->CharacterID = substr ( $CharID->href, 25, strlen ($CharID->href) );
-      
-      // Start getting other data.
-      $Result->CharacterImage = $Char->find ('img.character-icon', 0)->src;
-      
-      $Result->CharacterMainSkill = $Char->parent()->parent()->parent()->children(1)->plaintext;
-      $Result->CharacterWorld = $Char->parent()->parent()->parent()->children(2)->plaintext;
+          $Results[] = $Result;
 
-      $Results[] = $Result;
+        }
     }
     
     return $Results;    
